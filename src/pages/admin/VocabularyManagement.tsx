@@ -164,7 +164,7 @@ const VocabularyManagement: React.FC = () => {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${import.meta.env.VITE_AI_API_KEY}`,
-          "HTTP-Referer": "http://localhost:8080",
+          "HTTP-Referer": "https://langobridge.netlify.app",
           "X-Title": "Vocabulary Builder",
           "Content-Type": "application/json"
         },

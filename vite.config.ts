@@ -11,12 +11,17 @@ export default defineConfig(({ mode }) => ({
   },
   plugins: [
     react(),
-    mode === 'development' &&
-    componentTagger(),
+    mode === "development" && componentTagger(),
   ].filter(Boolean),
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  // Add this to disable source maps
+  build: {
+    sourcemap: false, // Disables source maps in production builds
+  },
+  // Optional: Disable source maps in development too
+  sourcemap: mode === "development" ? false : false, // Controls source maps for both dev and build
 }));

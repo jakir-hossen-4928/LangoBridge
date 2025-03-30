@@ -66,8 +66,8 @@ const translations = {
     noWordsFound: "কোন শব্দ পাওয়া যায়নি",
     tryAdjusting: "আপনার অনুসন্ধান সামঞ্জস্য করার চেষ্টা করুন বা উপরের ফর্মটি ব্যবহার করে একটি নতুন শব্দ অনুরোধ করুন।",
     requestNewWord: "নতুন শব্দ অনুরোধ করুন",
-    banglaWord: "বাংলা শব্দ",
-    koreanWord: "কোরিয়ান শব্দ",
+    banglaWord: "বাংলা",
+    koreanWord: "কোরিয়ান",
     submit: "জমা দিন",
     pleaseFillFields: "অনুগ্রহ করে সব ক্ষেত্র পূরণ করুন",
     invalidEmail: "অনুগ্রহ করে একটি বৈধ ইমেইল ঠিকানা দিন",
@@ -114,8 +114,8 @@ const translations = {
     noWordsFound: "단어를 찾을 수 없습니다",
     tryAdjusting: "검색을 조정하거나 위의 양식을 사용하여 새 단어를 요청하십시오.",
     requestNewWord: "새 단어 요청",
-    banglaWord: "벵골어 단어",
-    koreanWord: "한국어 단어",
+    banglaWord: "벵골어",
+    koreanWord: "한국어",
     submit: "제출",
     pleaseFillFields: "모든 필드를 채워주세요",
     invalidEmail: "유효한 이메일 주소를 입력해주세요",
@@ -152,11 +152,24 @@ export const VocabularyProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const fetchWords = useCallback(async (page: number = currentPage, search: string = searchTerm) => {
     setIsLoading(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10-second timeout
+
     try {
       const url = `${import.meta.env.VITE_BACKEND_URL}/bangla-korean-word-pair?page=${page}&limit=${itemsPerPage}${search ? `&search=${encodeURIComponent(search)}` : ''}`;
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const { data, total } = await response.json();
+      const response = await fetch(url, {
+        signal: controller.signal, // Attach the abort signal
+      });
+
+      clearTimeout(timeoutId); // Clear timeout if request succeeds
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const { data, total } = await response.json().catch(() => {
+        throw new Error('Failed to parse response as JSON');
+      });
       console.log('Fetch Words Response:', { data, total, page, search });
 
       const formattedWords: WordPair[] = (data || []).map((row: any) => ({
@@ -174,8 +187,12 @@ export const VocabularyProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setWordPairs(formattedWords);
       setFilteredWords(formattedWords);
       setTotalPages(Math.ceil(total / itemsPerPage) || 1);
-    } catch (error) {
-      console.error('Error fetching words:', error);
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        console.error('Fetch aborted due to timeout:', error);
+      } else {
+        console.error('Error fetching words:', error.message);
+      }
       setWordPairs([]);
       setFilteredWords([]);
     } finally {

@@ -8,6 +8,10 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    hmr: {
+      protocol: 'ws',
+      host: 'localhost',
+    },
   },
   plugins: [
     react(),
@@ -18,10 +22,7 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  // Add this to disable source maps
   build: {
-    sourcemap: false, // Disables source maps in production builds
+    sourcemap: false,
   },
-  // Optional: Disable source maps in development too
-  sourcemap: mode === "development" ? false : false, // Controls source maps for both dev and build
 }));

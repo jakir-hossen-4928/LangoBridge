@@ -2,6 +2,21 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { WordPair } from '@/types';
 import { useAuth } from './AuthContext';
+import {
+  collection,
+  onSnapshot,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  query,
+  orderBy,
+  serverTimestamp,
+  getCountFromServer,
+  getDocs, // Added for fetchAdminOverview
+  where // Added for fetchAdminOverview if needed for pending requests
+} from 'firebase/firestore';
+import { db } from '../firebase';
 
 interface AdminOverviewData {
   totalWords: number;
@@ -20,12 +35,12 @@ interface VocabularyContextType {
   totalPages: number;
   isLoading: boolean;
   adminOverview: AdminOverviewData | null;
-  selectedSuggestion: WordPair | null; // Add this to track the selected suggestion
+  selectedSuggestion: WordPair | null;
 
   setSearchTerm: (term: string) => void;
   setCurrentPage: (page: number) => void;
-  setFilteredWords: (words: WordPair[]) => void; // Expose this
-  setSelectedSuggestion: (word: WordPair | null) => void; // Add this to set the selected suggestion
+  setFilteredWords: (words: WordPair[]) => void;
+  setSelectedSuggestion: (word: WordPair | null) => void;
   toggleLanguage: () => void;
   translate: (key: string) => string;
   addWordPair: (word: Omit<WordPair, 'id'>) => Promise<void>;
@@ -37,7 +52,7 @@ interface VocabularyContextType {
 
 const VocabularyContext = createContext<VocabularyContextType | undefined>(undefined);
 
-// Translation data (unchanged)
+// Translation data
 const translations = {
   bangla: {
     home: "হোম",
@@ -86,6 +101,11 @@ const translations = {
     credentials: "পরিচয়পত্র:",
     demoCredentials: "ডেমো পরিচয়পত্র:",
     enterCredentials: "আপনার অ্যাকাউন্ট অ্যাক্সেস করতে আপনার পরিচয়পত্র লিখুন",
+    //app-download
+    appDownload: "অ্যাপ ডাউনলোড",
+    downloadNow: "এখন ডাউনলোড করুন",
+    downloadApp: "অ্যাপ ডাউনলোড করুন",
+    downloadLink: "ডাউনলোড লিঙ্ক",
   },
   korean: {
     home: "홈",
@@ -134,134 +154,118 @@ const translations = {
     credentials: "자격 증명:",
     demoCredentials: "데모 자격 증명:",
     enterCredentials: "계정에 액세스하려면 자격 증명을 입력하세요",
+    //app-download
+    appDownload: "앱 다운로드",
+    downloadNow: "지금 다운로드",
+    downloadApp: "앱 다운로드",
+    downloadLink: "다운로드 링크",
   }
 };
 
 export const VocabularyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [wordPairs, setWordPairs] = useState<WordPair[]>([]);
-  const [filteredWords, setFilteredWords] = useState<WordPair[]>([]);
+  const [allWords, setAllWords] = useState<WordPair[]>([]);
+  const [wordPairs, setWordPairs] = useState<WordPair[]>([]); // Paginated words
+  const [filteredWords, setFilteredWords] = useState<WordPair[]>([]); // Filtered and paginated words (or selected suggestion)
   const [selectedLanguage, setSelectedLanguage] = useState<'bangla' | 'korean'>('bangla');
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [adminOverview, setAdminOverview] = useState<AdminOverviewData | null>(null);
-  const [selectedSuggestion, setSelectedSuggestion] = useState<WordPair | null>(null); // Track selected suggestion
+  const [selectedSuggestion, setSelectedSuggestion] = useState<WordPair | null>(null);
   const itemsPerPage = 10;
-  const { user, token } = useAuth();
+  const { user } = useAuth(); // No need for token with Firestore client SDK
 
-  const fetchWords = useCallback(async (page: number = currentPage, search: string = searchTerm) => {
+  // Real-time subscription to word_pairs
+  useEffect(() => {
     setIsLoading(true);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10-second timeout
+    const wordsCollectionRef = collection(db, 'word_pairs');
+    let q = query(wordsCollectionRef, orderBy('createdAt', 'desc'));
 
-    try {
-      const url = `${import.meta.env.VITE_BACKEND_URL}/bangla-korean-word-pair?page=${page}&limit=${itemsPerPage}${search ? `&search=${encodeURIComponent(search)}` : ''}`;
-      const response = await fetch(url, {
-        signal: controller.signal, // Attach the abort signal
-      });
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const words = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as WordPair[];
 
-      clearTimeout(timeoutId); // Clear timeout if request succeeds
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const { data, total } = await response.json().catch(() => {
-        throw new Error('Failed to parse response as JSON');
-      });
-      console.log('Fetch Words Response:', { data, total, page, search });
-
-      const formattedWords: WordPair[] = (data || []).map((row: any) => ({
-        id: row.id || `local-${Date.now()}`,
-        bangla: row.bangla || "",
-        korean: row.korean || "",
-        partOfSpeech: row.partOfSpeech || null,
-        examples: row.banglaExample || row.koreanExample ? [{
-          bangla: row.banglaExample || "",
-          korean: row.koreanExample || ""
-        }] : [],
-        source: 'server',
-      }));
-
-      setWordPairs(formattedWords);
-      setFilteredWords(formattedWords);
-      setTotalPages(Math.ceil(total / itemsPerPage) || 1);
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-        console.error('Fetch aborted due to timeout:', error);
+      setAllWords(words);
+      setIsLoading(false);
+    }, (error) => {
+      console.error("Error fetching words from Firestore:", error);
+      // Fallback: try without ordering if index is missing
+      if (error.code === 'failed-precondition') {
+        console.warn("Firestore query failed, likely missing index. Retrying without orderBy.");
+        const fallbackQ = collection(db, 'word_pairs');
+        const fallbackUnsubscribe = onSnapshot(fallbackQ, (snap) => {
+          const words = snap.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          })) as WordPair[];
+          setAllWords(words);
+          setIsLoading(false);
+        }, (fallbackError) => {
+          console.error("Fallback Firestore query also failed:", fallbackError);
+          setIsLoading(false);
+        });
+        return fallbackUnsubscribe; // Return fallback unsubscribe
       } else {
-        console.error('Error fetching words:', error.message);
+        setIsLoading(false);
       }
-      setWordPairs([]);
-      setFilteredWords([]);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [currentPage, itemsPerPage, searchTerm]);
+    });
 
-  const fetchAdminOverview = useCallback(async () => {
-    if (!user || !token) {
-      console.warn('No auth token or user available for admin overview');
-      return;
-    }
+    return () => unsubscribe();
+  }, []);
 
-    setIsLoading(true);
-    try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/admin/overview`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(`HTTP error! status: ${response.status}, message: ${errorData.message || 'Unknown error'}`);
-      }
-
-      const data = await response.json();
-      console.log('Admin Overview Data:', data);
-      setAdminOverview(data);
-    } catch (error) {
-      console.error('Error fetching admin overview:', error);
-      setAdminOverview(null);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [token, user]);
-
+  // Filter and Pagination Logic
   useEffect(() => {
-    fetchWords();
-  }, [fetchWords]);
+    let result = [...allWords];
 
-  useEffect(() => {
-    // If a suggestion has been clicked, don't override filteredWords
+    // 1. Search
+    if (searchTerm) {
+      const lowerTerm = searchTerm.toLowerCase();
+      result = result.filter(word =>
+        word.bangla?.toLowerCase().includes(lowerTerm) ||
+        word.korean?.toLowerCase().includes(lowerTerm)
+      );
+    }
+
+    // 2. Sort
+    result.sort((a, b) => {
+      const first = selectedLanguage === 'bangla' ? a.bangla : a.korean;
+      const second = selectedLanguage === 'bangla' ? b.bangla : b.korean;
+      return (first || '').localeCompare(second || '');
+    });
+
+    // 3. Update Total Pages
+    const newTotalPages = Math.ceil(result.length / itemsPerPage) || 1;
+    setTotalPages(newTotalPages);
+
+    // 4. Pagination
+    // If currentPage is out of bounds (e.g. after search), reset it
+    if (currentPage > newTotalPages && newTotalPages > 0) {
+      setCurrentPage(newTotalPages);
+    } else if (currentPage === 0 && newTotalPages > 0) { // Handle case where currentPage might be 0
+      setCurrentPage(1);
+    } else if (newTotalPages === 0) { // No words found, reset page to 1
+      setCurrentPage(1);
+    }
+
+
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const paginated = result.slice(startIndex, startIndex + itemsPerPage);
+
+    setWordPairs(paginated);
+
+    // If a suggestion is selected, we might want to show only that,
+    // but usually filteredWords is what's shown in the list.
+    // The original logic had a check for selectedSuggestion.
     if (selectedSuggestion) {
       setFilteredWords([selectedSuggestion]);
-      return;
+    } else {
+      setFilteredWords(paginated);
     }
 
-    // Otherwise, filter based on searchTerm
-    if (!searchTerm) {
-      setFilteredWords(wordPairs);
-      return;
-    }
-
-    const filtered = wordPairs
-      .filter(word =>
-        word.bangla?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        word.korean?.toLowerCase().includes(searchTerm.toLowerCase())
-      )
-      .sort((a, b) => {
-        const first = selectedLanguage === 'bangla' ? a.bangla : a.korean;
-        const second = selectedLanguage === 'bangla' ? b.bangla : b.korean;
-        return (first || '').localeCompare(second || '');
-      });
-
-    setFilteredWords(filtered);
-  }, [searchTerm, selectedLanguage, wordPairs, selectedSuggestion]);
+  }, [allWords, searchTerm, currentPage, selectedLanguage, selectedSuggestion, itemsPerPage]);
 
   const toggleLanguage = () => {
     setSelectedLanguage(prev => (prev === 'bangla' ? 'korean' : 'bangla'));
@@ -272,126 +276,75 @@ export const VocabularyProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   };
 
   const addWordPair = useCallback(async (word: Omit<WordPair, 'id'>) => {
-    if (!user || !token) {
+    if (!user) {
       console.warn('Not authenticated to add word pair.');
-      return;
+      throw new Error('Authentication required to add word pair.');
     }
 
     setIsLoading(true);
     try {
-      console.log('Adding word payload:', word);
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/bangla-korean-word-pair`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({ ...word, partOfSpeech: word.partOfSpeech || null }),
+      await addDoc(collection(db, 'word_pairs'), {
+        ...word,
+        createdAt: serverTimestamp(),
+        source: 'local' // Or 'user-submitted'
       });
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `Failed to add word: ${response.status}`);
-      }
-      const newWord = await response.json();
-      console.log('Added word response:', newWord);
-      setWordPairs(prev => [newWord, ...prev]);
-      await fetchWords();
+      // No need to manually update state, onSnapshot will handle it
     } catch (error) {
       console.error('Error adding word:', error);
       throw error;
     } finally {
       setIsLoading(false);
     }
-  }, [fetchWords, token, user]);
+  }, [user]);
 
   const updateWordPair = useCallback(async (word: WordPair) => {
-    if (!user || !token) {
-      const error = new Error('You must be logged in to update a word.');
-      console.error('Authentication error:', error);
-      throw error;
+    if (!user) {
+      throw new Error('You must be logged in to update a word.');
     }
 
     setIsLoading(true);
     try {
-      console.log('Updating word payload:', word);
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/bangla-korean-word-pair/${word.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify(word),
+      const wordRef = doc(db, 'word_pairs', word.id);
+      const { id, ...data } = word;
+      await updateDoc(wordRef, {
+        ...data,
+        updatedAt: serverTimestamp()
       });
-
-      const responseData = await response.json();
-      console.log('Server response:', responseData);
-
-      if (!response.ok) {
-        throw new Error(responseData.error || `Failed to update word: ${response.status}`);
-      }
-
-      // Update state with the returned data
-      setWordPairs(prev => prev.map(w => w.id === word.id ? responseData : w));
-      await fetchWords(); // Refresh data after update
-
-      return responseData; // Always return the response data
     } catch (error: any) {
       console.error('Error updating word:', error);
-      throw error; // Re-throw the error to be caught by the caller
+      throw error;
     } finally {
       setIsLoading(false);
     }
-  }, [fetchWords, token, user]);
+  }, [user]);
 
   const removeWordPair = useCallback(async (id: string) => {
-    if (!user || !token) {
+    if (!user) {
       console.warn('Not authenticated to remove word pair.');
-      return;
+      throw new Error('Authentication required to remove word pair.');
     }
 
     setIsLoading(true);
     try {
-      console.log('Deleting word with id:', id);
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/bangla-korean-word-pair/${id}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `Failed to delete word: ${response.status}`);
-      }
-      setWordPairs(prev => prev.filter(word => word.id !== id));
-      await fetchWords();
+      await deleteDoc(doc(db, 'word_pairs', id));
     } catch (error) {
       console.error('Error deleting word:', error);
       throw error;
     } finally {
       setIsLoading(false);
     }
-  }, [fetchWords, token, user]);
+  }, [user]);
 
   const requestWordPair = async (bangla: string, korean: string, submittedBy: string) => {
     setIsLoading(true);
     try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/word-requests`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          bangla,
-          korean,
-          submittedBy,
-        }),
+      await addDoc(collection(db, 'word_requests'), {
+        bangla,
+        korean,
+        submittedBy,
+        status: 'pending',
+        createdAt: serverTimestamp()
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to submit word request');
-      }
-
-      const newRequest = await response.json();
-      console.log('Word request submitted:', newRequest);
       localStorage.setItem('LangoBridge-email-for-add-new-word', submittedBy);
     } catch (error) {
       console.error('Error requesting word pair:', error);
@@ -400,6 +353,45 @@ export const VocabularyProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setIsLoading(false);
     }
   };
+
+  const fetchAdminOverview = useCallback(async () => {
+    if (!user) {
+      console.warn('No user available for admin overview');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      // Total words count is simply the length of allWords
+      const totalWords = allWords.length;
+
+      // Get pending requests count
+      const pendingRequestsQuery = query(collection(db, 'word_requests'), where("status", "==", "pending"));
+      const pendingRequestsSnapshot = await getCountFromServer(pendingRequestsQuery);
+      const pendingRequests = pendingRequestsSnapshot.data().count;
+
+      // Recent activity from allWords (which is already loaded and sorted by createdAt desc if index exists)
+      const recentActivity = allWords.slice(0, 5).map(w => ({
+        id: w.id,
+        bangla: w.bangla || '',
+        korean: w.korean || '',
+        timestamp: (w as any).createdAt?.toDate ? (w as any).createdAt.toDate().toISOString() : new Date().toISOString() // Use Firestore timestamp if available
+      }));
+
+      setAdminOverview({
+        totalWords: totalWords,
+        pendingRequests: pendingRequests,
+        activeUsers: 0, // Placeholder, would require more complex logic (e.g., last login, custom claims)
+        lastUpdate: new Date().toISOString(),
+        recentActivity
+      });
+    } catch (error) {
+      console.error('Error fetching admin overview:', error);
+      setAdminOverview(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [user, allWords]);
 
   return (
     <VocabularyContext.Provider
@@ -412,11 +404,11 @@ export const VocabularyProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         totalPages,
         isLoading,
         adminOverview,
-        selectedSuggestion, // Expose this
+        selectedSuggestion,
         setSearchTerm,
         setCurrentPage,
         setFilteredWords,
-        setSelectedSuggestion, // Expose this
+        setSelectedSuggestion,
         toggleLanguage,
         translate,
         addWordPair,

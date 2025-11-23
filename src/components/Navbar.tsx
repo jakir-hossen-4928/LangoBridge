@@ -40,6 +40,7 @@ const Navbar: React.FC = () => {
     { name: translate('home'), path: '/' },
     { name: translate('vocabulary'), path: '/vocabulary' },
     { name: translate('requestword'), path: '/request-word' },
+    { name: translate('downloadApp'), path: '/langobridge-app' },
   ];
 
   return (

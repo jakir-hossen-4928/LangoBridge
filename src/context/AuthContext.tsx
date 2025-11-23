@@ -1,6 +1,15 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from "sonner";
+import {
+  signInWithEmailAndPassword,
+  signOut,
+  sendPasswordResetEmail,
+  confirmPasswordReset,
+  onAuthStateChanged,
+  User as FirebaseUser
+} from "firebase/auth";
+import { auth } from '../firebase';
 
 interface User {
   id: string;
@@ -21,165 +30,87 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const navigate = useNavigate();
-  const [user, setUser] = useState<User | null>(() => {
-    const savedUser = localStorage.getItem('auth_user');
-    try {
-      return savedUser ? JSON.parse(savedUser) : null;
-    } catch (error) {
-      console.error("Error parsing user from localStorage:", error);
-      localStorage.removeItem('auth_user');
-      return null;
-    }
-  });
-  const [token, setToken] = useState<string | null>(() => {
-    return localStorage.getItem('auth_token');
-  });
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!token && !!user);
-
-  const isTokenExpired = (token: string | null): boolean => {
-    if (!token) return true;
-    try {
-      const base64Url = token.split('.')[1];
-      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-      const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => {
-        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-      }).join(''));
-      const decoded = JSON.parse(jsonPayload);
-      const exp = decoded.exp * 1000;
-      return Date.now() >= exp;
-    } catch (error) {
-      console.error('Error decoding token:', error);
-      return true;
-    }
-  };
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const checkToken = () => {
-      if (token && isTokenExpired(token)) {
-        console.log('Token expired, logging out');
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const idToken = await firebaseUser.getIdToken();
+        setUser({
+          id: firebaseUser.uid,
+          email: firebaseUser.email || '',
+        });
+        setToken(idToken);
+        setIsAuthenticated(true);
+      } else {
         setUser(null);
         setToken(null);
         setIsAuthenticated(false);
-        localStorage.removeItem('auth_user');
-        localStorage.removeItem('auth_token');
-        toast.error('Session expired. Please log in again.');
-        navigate('/login');
       }
-    };
+      setLoading(false);
+    });
 
-    checkToken();
-    const interval = setInterval(checkToken, 60000);
-    return () => clearInterval(interval);
-  }, [token, navigate]);
-
-  useEffect(() => {
-    if (user && token && !isTokenExpired(token)) {
-      try {
-        localStorage.setItem('auth_user', JSON.stringify(user));
-        localStorage.setItem('auth_token', token);
-        setIsAuthenticated(true);
-      } catch (error) {
-        console.error("Error saving auth data to localStorage:", error);
-      }
-    } else {
-      localStorage.removeItem('auth_user');
-      localStorage.removeItem('auth_token');
-      setIsAuthenticated(false);
-    }
-    console.log('Auth State:', { user, token, isAuthenticated });
-  }, [user, token]);
+    return () => unsubscribe();
+  }, []);
 
   const login = async (email: string, password: string): Promise<boolean> => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Login failed:', errorData);
-        throw new Error(errorData.error || errorData.message || `Login failed with status ${response.status}`);
-      }
-
-      const data = await response.json();
-
-      if (!data.user || !data.token) {
-        console.error('Login response missing user or token:', data);
-        throw new Error('Login response invalid: Missing user or token');
-      }
-
-      if (isTokenExpired(data.token)) {
-        throw new Error('Received an expired token');
-      }
-
-      setUser(data.user);
-      setToken(data.token);
+      await signInWithEmailAndPassword(auth, email, password);
       toast.success('Logged in successfully');
-      console.log('Login Success:', { user: data.user, token: data.token });
-      return true; // Let LoginPage handle navigation
-    } catch (error) {
+      return true;
+    } catch (error: any) {
       console.error('Login error:', error);
-      toast.error(error instanceof Error ? error.message : 'Login failed');
+      let errorMessage = 'Login failed';
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+        errorMessage = 'Invalid email or password';
+      } else if (error.code === 'auth/invalid-email') {
+        errorMessage = 'Invalid email address';
+      }
+      toast.error(errorMessage);
       return false;
     }
   };
 
-  const logout = () => {
-    console.log('Logout called');
-    setUser(null);
-    setToken(null);
-    setIsAuthenticated(false);
-    localStorage.removeItem('auth_user');
-    localStorage.removeItem('auth_token');
-    toast.success('Logged out successfully');
-    navigate('/login');
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      toast.success('Logged out successfully');
+      navigate('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+      toast.error('Failed to logout');
+    }
   };
 
   const resetPassword = async (email: string): Promise<void> => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/auth/reset-password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Reset request failed');
-      }
-
+      await sendPasswordResetEmail(auth, email);
       toast.success('Password reset link sent to your email');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Reset password error:', error);
-      toast.error(error instanceof Error ? error.message : 'Reset failed');
+      toast.error(error.message || 'Reset failed');
       throw error;
     }
   };
 
   const verifyReset = async (token: string, newPassword: string): Promise<void> => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/auth/verify-reset`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, newPassword }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Reset verification failed');
-      }
-
+      // In Firebase, the token is the action code from the email link
+      await confirmPasswordReset(auth, token, newPassword);
       toast.success('Password reset successful. Please login with your new password.');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Verify reset error:', error);
-      toast.error(error instanceof Error ? error.message : 'Reset verification failed');
+      toast.error(error.message || 'Reset verification failed');
       throw error;
     }
   };
+
+  if (loading) {
+    return <div>Loading...</div>; // Or a proper loading spinner
+  }
 
   return (
     <AuthContext.Provider

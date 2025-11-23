@@ -20,6 +20,9 @@ import WordRequests from "./pages/admin/WordRequests";
 import AdminSettings from "./pages/admin/Settings";
 import TranslatedRequestWordForm from './components/TranslatedRequestWordForm';
 import RequestWordPage from './pages/RequestWordPage';
+import Appdownload from './components/Appdownload';
+import AppDownloadPage from './pages/AppDownloadPage';
+import History from './pages/History';
 
 const queryClient = new QueryClient();
 
@@ -36,7 +39,9 @@ const App = () => {
                 <Routes>
                   <Route path="/" element={<Index />} />
                   <Route path="/vocabulary" element={<VocabularyList />} />
+                  <Route path="/history" element={<History />} />
                   <Route path="/request-word" element={<RequestWordPage />} />
+                  <Route path="/langobridge-app" element={<AppDownloadPage />} />
                   <Route path="/login" element={<Login />} />
 
                   {/* Protected Admin Routes */}
